@@ -35,6 +35,7 @@ class SoundService : Service() {
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "Service onCreate")
+        RecentSoundsManager.init(applicationContext)
         soundPlayer = SoundPlayer()
         soundServer = SoundServer(8080, soundPlayer!!)
     }
@@ -73,7 +74,13 @@ class SoundService : Service() {
     }
 
     fun playTestSound() {
-        soundPlayer?.play("https://www.myinstants.com/media/sounds/mgs-alert.mp3")
+        playSound("mgs-alert.mp3")
+    }
+
+    fun playSound(filename: String) {
+        val url = "https://www.myinstants.com/media/sounds/$filename"
+        soundPlayer?.play(url)
+        RecentSoundsManager.addSound(filename)
     }
 
     private fun createNotificationChannel() {

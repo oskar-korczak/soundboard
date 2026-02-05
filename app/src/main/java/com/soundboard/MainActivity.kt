@@ -18,6 +18,8 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.recyclerview.widget.GridLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
@@ -31,10 +33,18 @@ class MainActivity : AppCompatActivity() {
     private lateinit var ipText: TextView
     private lateinit var toggleButton: Button
     private lateinit var testButton: Button
+    private lateinit var recyclerView: RecyclerView
+    private lateinit var adapter: RecentSoundsAdapter
 
     private var soundService: SoundService? = null
     private var isBound = false
     private val handler = Handler(Looper.getMainLooper())
+
+    private val recentSoundsListener: () -> Unit = {
+        handler.post {
+            adapter.submitList(RecentSoundsManager.getRecentSounds())
+        }
+    }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -61,6 +71,18 @@ class MainActivity : AppCompatActivity() {
         ipText = findViewById(R.id.ipText)
         toggleButton = findViewById(R.id.toggleButton)
         testButton = findViewById(R.id.testButton)
+        recyclerView = findViewById(R.id.recentSoundsRecyclerView)
+
+        RecentSoundsManager.init(applicationContext)
+
+        adapter = RecentSoundsAdapter { sound ->
+            soundService?.playSound(sound.filename)
+        }
+        recyclerView.layoutManager = GridLayoutManager(this, 3)
+        recyclerView.adapter = adapter
+
+        adapter.submitList(RecentSoundsManager.getRecentSounds())
+        RecentSoundsManager.addChangeListener(recentSoundsListener)
 
         requestNotificationPermission()
 
@@ -92,6 +114,11 @@ class MainActivity : AppCompatActivity() {
             unbindService(connection)
             isBound = false
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        RecentSoundsManager.removeChangeListener(recentSoundsListener)
     }
 
     private fun requestNotificationPermission() {

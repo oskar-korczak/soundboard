@@ -1,6 +1,7 @@
 package com.soundboard
 
 import fi.iki.elonen.NanoHTTPD
+import java.net.URL
 
 class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(port) {
 
@@ -14,6 +15,7 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
 
         return when {
             uri == "/play" -> handlePlay(params)
+            uri == "/play-url" -> handlePlayUrl(params)
             uri == "/stop" -> handleStop()
             uri == "/status" -> handleStatus()
             uri == "/recent" -> handleRecent()
@@ -22,7 +24,7 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
             else -> newFixedLengthResponse(
                 Response.Status.NOT_FOUND,
                 "application/json",
-                """{"error": "Not found", "endpoints": ["/play?file=<name>.mp3", "/stop", "/status", "/recent", "/ui"]}"""
+                """{"error": "Not found", "endpoints": ["/play?file=<name>.mp3", "/play-url?url=<myinstants-url>", "/stop", "/status", "/recent", "/ui"]}"""
             )
         }
     }
@@ -53,6 +55,53 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
                 Response.Status.INTERNAL_ERROR,
                 "application/json",
                 """{"error": "Failed to play sound", "message": "${e.message}"}"""
+            )
+        }
+    }
+
+    private fun handlePlayUrl(params: Map<String, String>): Response {
+        val pageUrl = params["url"]
+
+        if (pageUrl.isNullOrBlank()) {
+            return newFixedLengthResponse(
+                Response.Status.BAD_REQUEST,
+                "application/json",
+                """{"error": "Missing 'url' parameter", "usage": "/play-url?url=https://www.myinstants.com/en/instant/..."}"""
+            )
+        }
+
+        return try {
+            // Fetch the myinstants page
+            val html = URL(pageUrl).readText()
+
+            // Extract filename from: var preloadAudioUrl = '/media/sounds/xxx.mp3';
+            val regex = """var preloadAudioUrl = '/media/sounds/([^']+)';""".toRegex()
+            val match = regex.find(html)
+            val filename = match?.groupValues?.get(1)
+
+            if (filename == null) {
+                return newFixedLengthResponse(
+                    Response.Status.BAD_REQUEST,
+                    "application/json",
+                    """{"error": "Could not find sound on page", "url": "$pageUrl"}"""
+                )
+            }
+
+            // Play the sound
+            val soundUrl = BASE_URL + filename
+            soundPlayer.play(soundUrl)
+            RecentSoundsManager.addSound(filename)
+
+            newFixedLengthResponse(
+                Response.Status.OK,
+                "application/json",
+                """{"status": "playing", "file": "$filename", "url": "$soundUrl"}"""
+            )
+        } catch (e: Exception) {
+            newFixedLengthResponse(
+                Response.Status.INTERNAL_ERROR,
+                "application/json",
+                """{"error": "Failed to fetch or play sound", "message": "${e.message}"}"""
             )
         }
     }
@@ -96,6 +145,7 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
                 <h2>Endpoints:</h2>
                 <ul>
                     <li><code>GET /play?file=&lt;filename&gt;.mp3</code> - Play a sound from myinstants.com</li>
+                    <li><code>GET /play-url?url=&lt;myinstants-page-url&gt;</code> - Play sound from myinstants page URL</li>
                     <li><code>GET /stop</code> - Stop current playback</li>
                     <li><code>GET /status</code> - Get server status</li>
                     <li><code>GET /recent</code> - Get recently played sounds</li>
@@ -103,6 +153,7 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
                 </ul>
                 <h2>Example:</h2>
                 <pre>curl "http://&lt;this-ip&gt;:8080/play?file=mgs-alert.mp3"</pre>
+                <pre>curl "http://&lt;this-ip&gt;:8080/play-url?url=https://www.myinstants.com/en/instant/apple-pay-45496/"</pre>
                 <p><a href="/ui">Open Interactive UI</a></p>
             </body>
             </html>
@@ -142,8 +193,59 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
         h1 {
             color: #fff;
             text-align: center;
-            margin-bottom: 30px;
+            margin-bottom: 10px;
             font-size: 2em;
+        }
+
+        .hint {
+            color: #888;
+            text-align: center;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+
+        .hint a {
+            color: #4ECDC4;
+        }
+
+        .url-input-container {
+            max-width: 800px;
+            margin: 0 auto 20px auto;
+            display: flex;
+            gap: 10px;
+        }
+
+        .url-input {
+            flex: 1;
+            padding: 12px 16px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            background: #16213e;
+            color: #fff;
+        }
+
+        .url-input::placeholder {
+            color: #666;
+        }
+
+        .url-input:focus {
+            outline: 2px solid #4ECDC4;
+        }
+
+        .play-url-button {
+            background: #27ae60;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .play-url-button:hover {
+            background: #2ecc71;
         }
 
         .button-grid {
@@ -227,10 +329,22 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
         .refresh-button:hover {
             background: #2980b9;
         }
+
+        .error-message {
+            color: #e74c3c;
+            text-align: center;
+            margin-bottom: 10px;
+        }
     </style>
 </head>
 <body>
     <h1>Soundboard</h1>
+    <p class="hint">Paste a link copied from <a href="https://www.myinstants.com/en/index/pl/" target="_blank">myinstants.com</a></p>
+    <div class="url-input-container">
+        <input type="text" id="urlInput" class="url-input" placeholder="https://www.myinstants.com/en/instant/...">
+        <button class="play-url-button" onclick="playUrl()">Play</button>
+    </div>
+    <div id="error" class="error-message"></div>
     <div class="controls">
         <button class="stop-button" onclick="stopSound()">Stop</button>
         <button class="refresh-button" onclick="loadSounds()">Refresh</button>
@@ -251,7 +365,7 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
             const container = document.getElementById('buttons');
 
             if (!sounds || sounds.length === 0) {
-                container.innerHTML = '<div class="empty-state">No sounds played yet.<br>Use /play?file=sound.mp3 to add sounds.</div>';
+                container.innerHTML = '<div class="empty-state">No sounds played yet.<br>Paste a myinstants.com link above to add sounds.</div>';
                 return;
             }
 
@@ -269,6 +383,7 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
         }
 
         async function playSound(filename) {
+            document.getElementById('error').textContent = '';
             try {
                 await fetch('/play?file=' + encodeURIComponent(filename));
                 setTimeout(loadSounds, 100);
@@ -276,6 +391,34 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
                 console.error('Failed to play sound:', error);
             }
         }
+
+        async function playUrl() {
+            const url = document.getElementById('urlInput').value.trim();
+            if (!url) return;
+
+            document.getElementById('error').textContent = '';
+
+            try {
+                const response = await fetch('/play-url?url=' + encodeURIComponent(url));
+                const data = await response.json();
+                if (data.error) {
+                    document.getElementById('error').textContent = data.error;
+                } else {
+                    document.getElementById('urlInput').value = '';
+                    setTimeout(loadSounds, 100);
+                }
+            } catch (error) {
+                document.getElementById('error').textContent = 'Failed to play URL';
+                console.error('Failed to play URL:', error);
+            }
+        }
+
+        // Allow Enter key to submit URL
+        document.getElementById('urlInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                playUrl();
+            }
+        });
 
         async function stopSound() {
             try {

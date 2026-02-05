@@ -13,7 +13,6 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
-import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -31,8 +30,6 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var statusText: TextView
     private lateinit var ipText: TextView
-    private lateinit var toggleButton: Button
-    private lateinit var testButton: Button
     private lateinit var recyclerView: RecyclerView
     private lateinit var adapter: RecentSoundsAdapter
 
@@ -69,8 +66,6 @@ class MainActivity : AppCompatActivity() {
 
         statusText = findViewById(R.id.statusText)
         ipText = findViewById(R.id.ipText)
-        toggleButton = findViewById(R.id.toggleButton)
-        testButton = findViewById(R.id.testButton)
         recyclerView = findViewById(R.id.recentSoundsRecyclerView)
 
         RecentSoundsManager.init(applicationContext)
@@ -85,20 +80,10 @@ class MainActivity : AppCompatActivity() {
         RecentSoundsManager.addChangeListener(recentSoundsListener)
 
         requestNotificationPermission()
-
-        toggleButton.setOnClickListener {
-            if (isBound && soundService?.isRunning() == true) {
-                stopSoundService()
-            } else {
-                startSoundService()
-            }
-        }
-
-        testButton.setOnClickListener {
-            soundService?.playTestSound()
-        }
-
         displayIpAddress()
+
+        // Auto-start the server
+        startSoundService()
     }
 
     override fun onStart() {
@@ -148,30 +133,21 @@ class MainActivity : AppCompatActivity() {
             if (!isBound) {
                 bindService(intent, connection, Context.BIND_AUTO_CREATE)
             }
-            // Delay UI update to allow service to start
             handler.postDelayed({ updateUI() }, 500)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start service", e)
         }
     }
 
-    private fun stopSoundService() {
-        soundService?.stopServer()
-        stopService(Intent(this, SoundService::class.java))
-        updateUI()
-    }
-
     private fun updateUI() {
         val isRunning = soundService?.isRunning() == true
-        statusText.text = if (isRunning) "Server Running" else "Server Stopped"
-        toggleButton.text = if (isRunning) "Stop Server" else "Start Server"
-        testButton.isEnabled = isRunning
+        statusText.text = if (isRunning) "Server Running" else "Starting..."
     }
 
     private fun displayIpAddress() {
         val ip = getLocalIpAddress()
         if (ip != null) {
-            ipText.text = "http://$ip:8080/play?file=<sound>.mp3"
+            ipText.text = "http://$ip:8080/ui"
         } else {
             ipText.text = "Connect to WiFi to get IP address"
         }

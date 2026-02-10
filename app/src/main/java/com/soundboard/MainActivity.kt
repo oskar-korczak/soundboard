@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import android.widget.Switch
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -31,6 +32,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var ipText: TextView
     private lateinit var rateLimitText: TextView
+    private lateinit var rateLimitSwitch: Switch
     private lateinit var recyclerView: RecyclerView
     private lateinit var adapter: RecentSoundsAdapter
 
@@ -74,6 +76,10 @@ class MainActivity : AppCompatActivity() {
         statusText = findViewById(R.id.statusText)
         ipText = findViewById(R.id.ipText)
         rateLimitText = findViewById(R.id.rateLimitText)
+        rateLimitSwitch = findViewById(R.id.rateLimitSwitch)
+        rateLimitSwitch.setOnCheckedChangeListener { _, isChecked ->
+            RateLimitManager.setEnabled(isChecked)
+        }
         recyclerView = findViewById(R.id.recentSoundsRecyclerView)
 
         RecentSoundsManager.init(applicationContext)

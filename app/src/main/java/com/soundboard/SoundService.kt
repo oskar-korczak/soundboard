@@ -36,7 +36,7 @@ class SoundService : Service() {
         super.onCreate()
         Log.d(TAG, "Service onCreate")
         RecentSoundsManager.init(applicationContext)
-        soundPlayer = SoundPlayer()
+        soundPlayer = SoundPlayer(applicationContext)
         soundServer = SoundServer(8080, soundPlayer!!)
     }
 

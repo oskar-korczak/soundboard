@@ -1,16 +1,25 @@
 package com.soundboard
 
+import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.MediaPlayer
 
-class SoundPlayer {
+class SoundPlayer(context: Context) {
 
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var mediaPlayer: MediaPlayer? = null
     private val lock = Object()
+
+    companion object {
+        private const val TARGET_VOLUME = 10
+    }
 
     fun play(url: String) {
         synchronized(lock) {
             stop()
+            val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, TARGET_VOLUME.coerceAtMost(maxVolume), 0)
 
             mediaPlayer = MediaPlayer().apply {
                 setAudioAttributes(

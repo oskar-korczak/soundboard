@@ -8,9 +8,16 @@ object RateLimitManager {
     private const val MAX_REQUESTS = 5
     private const val WINDOW_MS = 10 * 60 * 1000L // 10 minutes
 
+    private var enabled = true
     private val requestLog = HashMap<String, MutableList<Long>>()
     private val listeners = mutableListOf<() -> Unit>()
     private val lock = Any()
+
+    fun isEnabled(): Boolean = synchronized(lock) { enabled }
+
+    fun setEnabled(value: Boolean) {
+        synchronized(lock) { enabled = value }
+    }
 
     data class RateLimitResult(
         val allowed: Boolean,
@@ -27,6 +34,10 @@ object RateLimitManager {
 
     fun checkAndRecord(ip: String): RateLimitResult {
         synchronized(lock) {
+            if (!enabled) {
+                return RateLimitResult(allowed = true, used = 0, limit = MAX_REQUESTS, remainingSeconds = 0)
+            }
+
             val now = System.currentTimeMillis()
             val cutoff = now - WINDOW_MS
 

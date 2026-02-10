@@ -11,6 +11,8 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import java.net.HttpURLConnection
+import java.net.URL
 
 class SoundService : Service() {
 
@@ -79,8 +81,27 @@ class SoundService : Service() {
 
     fun playSound(filename: String) {
         val url = "https://www.myinstants.com/media/sounds/$filename"
-        soundPlayer?.play(url)
-        RecentSoundsManager.addSound(filename)
+        Thread {
+            val exists = try {
+                val connection = URL(url).openConnection() as HttpURLConnection
+                connection.requestMethod = "HEAD"
+                connection.connectTimeout = 3000
+                connection.readTimeout = 3000
+                try {
+                    connection.responseCode == 200
+                } finally {
+                    connection.disconnect()
+                }
+            } catch (e: Exception) {
+                false
+            }
+            if (exists) {
+                soundPlayer?.play(url)
+                RecentSoundsManager.addSound(filename)
+            } else {
+                RecentSoundsManager.removeSound(filename)
+            }
+        }.start()
     }
 
     private fun createNotificationChannel() {

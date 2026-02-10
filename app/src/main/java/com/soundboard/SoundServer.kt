@@ -1,6 +1,7 @@
 package com.soundboard
 
 import fi.iki.elonen.NanoHTTPD
+import java.net.HttpURLConnection
 import java.net.URL
 
 class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(port) {
@@ -47,18 +48,27 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
             )
         }
 
-        val rateLimitResult = RateLimitManager.checkAndRecord(clientIp)
-        if (!rateLimitResult.allowed) {
-            return newFixedLengthResponse(
-                TOO_MANY_REQUESTS,
-                "application/json",
-                """{"error": "Rate limit exceeded", "used": ${rateLimitResult.used}, "limit": ${rateLimitResult.limit}, "retryAfterSeconds": ${rateLimitResult.remainingSeconds}}"""
-            )
-        }
-
         val url = BASE_URL + filename
 
         return try {
+            if (!soundExists(url)) {
+                RecentSoundsManager.removeSound(filename)
+                return newFixedLengthResponse(
+                    Response.Status.NOT_FOUND,
+                    "application/json",
+                    """{"error": "Sound not found", "file": "$filename"}"""
+                )
+            }
+
+            val rateLimitResult = RateLimitManager.checkAndRecord(clientIp)
+            if (!rateLimitResult.allowed) {
+                return newFixedLengthResponse(
+                    TOO_MANY_REQUESTS,
+                    "application/json",
+                    """{"error": "Rate limit exceeded", "used": ${rateLimitResult.used}, "limit": ${rateLimitResult.limit}, "retryAfterSeconds": ${rateLimitResult.remainingSeconds}}"""
+                )
+            }
+
             soundPlayer.play(url)
             RecentSoundsManager.addSound(filename)
             newFixedLengthResponse(
@@ -86,15 +96,6 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
             )
         }
 
-        val rateLimitResult = RateLimitManager.checkAndRecord(clientIp)
-        if (!rateLimitResult.allowed) {
-            return newFixedLengthResponse(
-                TOO_MANY_REQUESTS,
-                "application/json",
-                """{"error": "Rate limit exceeded", "used": ${rateLimitResult.used}, "limit": ${rateLimitResult.limit}, "retryAfterSeconds": ${rateLimitResult.remainingSeconds}}"""
-            )
-        }
-
         return try {
             // Fetch the myinstants page
             val html = URL(pageUrl).readText()
@@ -114,6 +115,24 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
 
             // Play the sound
             val soundUrl = BASE_URL + filename
+            if (!soundExists(soundUrl)) {
+                RecentSoundsManager.removeSound(filename)
+                return newFixedLengthResponse(
+                    Response.Status.NOT_FOUND,
+                    "application/json",
+                    """{"error": "Sound not found", "file": "$filename"}"""
+                )
+            }
+
+            val rateLimitResult = RateLimitManager.checkAndRecord(clientIp)
+            if (!rateLimitResult.allowed) {
+                return newFixedLengthResponse(
+                    TOO_MANY_REQUESTS,
+                    "application/json",
+                    """{"error": "Rate limit exceeded", "used": ${rateLimitResult.used}, "limit": ${rateLimitResult.limit}, "retryAfterSeconds": ${rateLimitResult.remainingSeconds}}"""
+                )
+            }
+
             soundPlayer.play(soundUrl)
             RecentSoundsManager.addSound(filename)
 
@@ -163,6 +182,18 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
             "application/json",
             """{"server": "running", "playing": $isPlaying}"""
         )
+    }
+
+    private fun soundExists(url: String): Boolean {
+        val connection = URL(url).openConnection() as HttpURLConnection
+        connection.requestMethod = "HEAD"
+        connection.connectTimeout = 3000
+        connection.readTimeout = 3000
+        return try {
+            connection.responseCode == 200
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun handleRoot(): Response {
@@ -429,6 +460,9 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
                     document.getElementById('error').textContent = 'Rate limited! Try again in ' + data.retryAfterSeconds + 's';
                     loadRateLimits();
                     return;
+                }
+                if (response.status === 404) {
+                    document.getElementById('error').textContent = 'Sound not found';
                 }
                 setTimeout(loadSounds, 100);
                 loadRateLimits();

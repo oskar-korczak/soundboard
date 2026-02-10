@@ -55,6 +55,17 @@ object RecentSoundsManager {
         notifyListeners()
     }
 
+    fun removeSound(filename: String) {
+        synchronized(lock) {
+            if (recentSounds.remove(filename) != null) {
+                saveToPrefs()
+            } else {
+                return
+            }
+        }
+        notifyListeners()
+    }
+
     fun getRecentSounds(): List<RecentSound> {
         synchronized(lock) {
             return recentSounds.values.toList().reversed()

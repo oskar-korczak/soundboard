@@ -9,27 +9,34 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
         private const val BASE_URL = "https://www.myinstants.com/media/sounds/"
     }
 
+    private val TOO_MANY_REQUESTS = object : Response.IStatus {
+        override fun getRequestStatus() = 429
+        override fun getDescription() = "429 Too Many Requests"
+    }
+
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri
         val params = session.parms
+        val clientIp = session.remoteIpAddress
 
         return when {
-            uri == "/play" -> handlePlay(params)
-            uri == "/play-url" -> handlePlayUrl(params)
+            uri == "/play" -> handlePlay(params, clientIp)
+            uri == "/play-url" -> handlePlayUrl(params, clientIp)
             uri == "/stop" -> handleStop()
             uri == "/status" -> handleStatus()
             uri == "/recent" -> handleRecent()
+            uri == "/rate-limits" -> handleRateLimits()
             uri == "/ui" -> handleUI()
             uri == "/" -> handleRoot()
             else -> newFixedLengthResponse(
                 Response.Status.NOT_FOUND,
                 "application/json",
-                """{"error": "Not found", "endpoints": ["/play?file=<name>.mp3", "/play-url?url=<myinstants-url>", "/stop", "/status", "/recent", "/ui"]}"""
+                """{"error": "Not found", "endpoints": ["/play?file=<name>.mp3", "/play-url?url=<myinstants-url>", "/stop", "/status", "/recent", "/rate-limits", "/ui"]}"""
             )
         }
     }
 
-    private fun handlePlay(params: Map<String, String>): Response {
+    private fun handlePlay(params: Map<String, String>, clientIp: String): Response {
         val filename = params["file"]
 
         if (filename.isNullOrBlank()) {
@@ -37,6 +44,15 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
                 Response.Status.BAD_REQUEST,
                 "application/json",
                 """{"error": "Missing 'file' parameter", "usage": "/play?file=example.mp3"}"""
+            )
+        }
+
+        val rateLimitResult = RateLimitManager.checkAndRecord(clientIp)
+        if (!rateLimitResult.allowed) {
+            return newFixedLengthResponse(
+                TOO_MANY_REQUESTS,
+                "application/json",
+                """{"error": "Rate limit exceeded", "used": ${rateLimitResult.used}, "limit": ${rateLimitResult.limit}, "retryAfterSeconds": ${rateLimitResult.remainingSeconds}}"""
             )
         }
 
@@ -59,7 +75,7 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
         }
     }
 
-    private fun handlePlayUrl(params: Map<String, String>): Response {
+    private fun handlePlayUrl(params: Map<String, String>, clientIp: String): Response {
         val pageUrl = params["url"]
 
         if (pageUrl.isNullOrBlank()) {
@@ -67,6 +83,15 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
                 Response.Status.BAD_REQUEST,
                 "application/json",
                 """{"error": "Missing 'url' parameter", "usage": "/play-url?url=https://www.myinstants.com/en/instant/..."}"""
+            )
+        }
+
+        val rateLimitResult = RateLimitManager.checkAndRecord(clientIp)
+        if (!rateLimitResult.allowed) {
+            return newFixedLengthResponse(
+                TOO_MANY_REQUESTS,
+                "application/json",
+                """{"error": "Rate limit exceeded", "used": ${rateLimitResult.used}, "limit": ${rateLimitResult.limit}, "retryAfterSeconds": ${rateLimitResult.remainingSeconds}}"""
             )
         }
 
@@ -114,6 +139,14 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
         )
     }
 
+    private fun handleRateLimits(): Response {
+        return newFixedLengthResponse(
+            Response.Status.OK,
+            "application/json",
+            RateLimitManager.toJson()
+        )
+    }
+
     private fun handleStop(): Response {
         soundPlayer.stop()
         return newFixedLengthResponse(
@@ -149,6 +182,7 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
                     <li><code>GET /stop</code> - Stop current playback</li>
                     <li><code>GET /status</code> - Get server status</li>
                     <li><code>GET /recent</code> - Get recently played sounds</li>
+                    <li><code>GET /rate-limits</code> - Get rate limit quotas per IP</li>
                     <li><code>GET /ui</code> - Interactive web UI</li>
                 </ul>
                 <h2>Example:</h2>
@@ -349,6 +383,10 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
         <button class="stop-button" onclick="stopSound()">Stop</button>
         <button class="refresh-button" onclick="loadSounds()">Refresh</button>
     </div>
+    <div id="rateLimits" style="max-width: 800px; margin: 0 auto 20px auto; background: #16213e; border-radius: 8px; padding: 15px; color: #ccc; font-size: 14px;">
+        <h3 style="color: #4ECDC4; margin: 0 0 10px 0; font-size: 16px;">Rate Limits (5 plays / 10 min)</h3>
+        <div id="rateLimitList" style="font-family: monospace;"><span style="color: #666;">No activity yet</span></div>
+    </div>
     <div id="buttons" class="button-grid"></div>
     <script>
         async function loadSounds() {
@@ -385,8 +423,15 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
         async function playSound(filename) {
             document.getElementById('error').textContent = '';
             try {
-                await fetch('/play?file=' + encodeURIComponent(filename));
+                const response = await fetch('/play?file=' + encodeURIComponent(filename));
+                const data = await response.json();
+                if (response.status === 429) {
+                    document.getElementById('error').textContent = 'Rate limited! Try again in ' + data.retryAfterSeconds + 's';
+                    loadRateLimits();
+                    return;
+                }
                 setTimeout(loadSounds, 100);
+                loadRateLimits();
             } catch (error) {
                 console.error('Failed to play sound:', error);
             }
@@ -401,11 +446,17 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
             try {
                 const response = await fetch('/play-url?url=' + encodeURIComponent(url));
                 const data = await response.json();
+                if (response.status === 429) {
+                    document.getElementById('error').textContent = 'Rate limited! Try again in ' + data.retryAfterSeconds + 's';
+                    loadRateLimits();
+                    return;
+                }
                 if (data.error) {
                     document.getElementById('error').textContent = data.error;
                 } else {
                     document.getElementById('urlInput').value = '';
                     setTimeout(loadSounds, 100);
+                    loadRateLimits();
                 }
             } catch (error) {
                 document.getElementById('error').textContent = 'Failed to play URL';
@@ -428,8 +479,37 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
             }
         }
 
+        async function loadRateLimits() {
+            try {
+                const response = await fetch('/rate-limits');
+                const data = await response.json();
+                renderRateLimits(data.quotas);
+            } catch (error) {
+                console.error('Failed to load rate limits:', error);
+            }
+        }
+
+        function renderRateLimits(quotas) {
+            const container = document.getElementById('rateLimitList');
+            if (!quotas || quotas.length === 0) {
+                container.innerHTML = '<span style="color: #666;">No activity yet</span>';
+                return;
+            }
+            container.innerHTML = quotas.map(function(q) {
+                var pct = (q.used / q.limit) * 100;
+                var barColor = q.used >= q.limit ? '#e74c3c' : (q.used >= 3 ? '#f39c12' : '#27ae60');
+                return '<div style="margin-bottom: 8px;">' +
+                    '<span>' + escapeHtml(q.ip) + ': ' + q.used + '/' + q.limit + '</span>' +
+                    '<div style="background: #0f3460; border-radius: 4px; height: 6px; margin-top: 4px;">' +
+                    '<div style="background: ' + barColor + '; width: ' + pct + '%; height: 100%; border-radius: 4px;"></div>' +
+                    '</div></div>';
+            }).join('');
+        }
+
         loadSounds();
+        loadRateLimits();
         setInterval(loadSounds, 5000);
+        setInterval(loadRateLimits, 5000);
     </script>
 </body>
 </html>

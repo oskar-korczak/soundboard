@@ -30,6 +30,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var statusText: TextView
     private lateinit var ipText: TextView
+    private lateinit var rateLimitText: TextView
     private lateinit var recyclerView: RecyclerView
     private lateinit var adapter: RecentSoundsAdapter
 
@@ -40,6 +41,12 @@ class MainActivity : AppCompatActivity() {
     private val recentSoundsListener: () -> Unit = {
         handler.post {
             adapter.submitList(RecentSoundsManager.getRecentSounds())
+        }
+    }
+
+    private val rateLimitListener: () -> Unit = {
+        handler.post {
+            updateRateLimitDisplay()
         }
     }
 
@@ -66,6 +73,7 @@ class MainActivity : AppCompatActivity() {
 
         statusText = findViewById(R.id.statusText)
         ipText = findViewById(R.id.ipText)
+        rateLimitText = findViewById(R.id.rateLimitText)
         recyclerView = findViewById(R.id.recentSoundsRecyclerView)
 
         RecentSoundsManager.init(applicationContext)
@@ -78,6 +86,7 @@ class MainActivity : AppCompatActivity() {
 
         adapter.submitList(RecentSoundsManager.getRecentSounds())
         RecentSoundsManager.addChangeListener(recentSoundsListener)
+        RateLimitManager.addChangeListener(rateLimitListener)
 
         requestNotificationPermission()
         displayIpAddress()
@@ -104,6 +113,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         RecentSoundsManager.removeChangeListener(recentSoundsListener)
+        RateLimitManager.removeChangeListener(rateLimitListener)
     }
 
     private fun requestNotificationPermission() {
@@ -142,6 +152,17 @@ class MainActivity : AppCompatActivity() {
     private fun updateUI() {
         val isRunning = soundService?.isRunning() == true
         statusText.text = if (isRunning) "Server Running" else "Starting..."
+    }
+
+    private fun updateRateLimitDisplay() {
+        val quotas = RateLimitManager.getQuotas()
+        if (quotas.isEmpty()) {
+            rateLimitText.text = ""
+        } else {
+            rateLimitText.text = quotas.joinToString("\n") { q ->
+                "${q.ip}: ${q.used}/${q.limit} used"
+            }
+        }
     }
 
     private fun displayIpAddress() {

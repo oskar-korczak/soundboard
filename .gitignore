@@ -15,3 +15,6 @@ local.properties
 
 # APK files
 *.apk
+
+# Playwright MCP
+.playwright-mcp/

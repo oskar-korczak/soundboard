@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import android.view.View
 import android.widget.Switch
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -29,12 +30,14 @@ class MainActivity : AppCompatActivity() {
         private const val TAG = "Soundboard"
     }
 
-    private lateinit var statusText: TextView
     private lateinit var ipText: TextView
-    private lateinit var rateLimitText: TextView
     private lateinit var rateLimitSwitch: Switch
     private lateinit var recyclerView: RecyclerView
     private lateinit var adapter: RecentSoundsAdapter
+    private lateinit var focusStateText: TextView
+    private lateinit var focusVotesText: TextView
+    private lateinit var focusTimerText: TextView
+    private lateinit var focusPolicyText: TextView
 
     private var soundService: SoundService? = null
     private var isBound = false
@@ -46,9 +49,18 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private val rateLimitListener: () -> Unit = {
+    private val focusTimeListener: () -> Unit = {
         handler.post {
-            updateRateLimitDisplay()
+            updateFocusTimeDisplay()
+        }
+    }
+
+    private val focusTimerRunnable = object : Runnable {
+        override fun run() {
+            updateFocusTimeDisplay()
+            if (FocusTimeManager.getState() == FocusTimeManager.State.FOCUS_VOTING) {
+                handler.postDelayed(this, 1000)
+            }
         }
     }
 
@@ -58,14 +70,12 @@ class MainActivity : AppCompatActivity() {
             val binder = service as SoundService.LocalBinder
             soundService = binder.getService()
             isBound = true
-            updateUI()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
             Log.d(TAG, "Service disconnected")
             soundService = null
             isBound = false
-            updateUI()
         }
     }
 
@@ -73,14 +83,16 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        statusText = findViewById(R.id.statusText)
         ipText = findViewById(R.id.ipText)
-        rateLimitText = findViewById(R.id.rateLimitText)
         rateLimitSwitch = findViewById(R.id.rateLimitSwitch)
         rateLimitSwitch.setOnCheckedChangeListener { _, isChecked ->
             RateLimitManager.setEnabled(isChecked)
         }
         recyclerView = findViewById(R.id.recentSoundsRecyclerView)
+        focusStateText = findViewById(R.id.focusStateText)
+        focusVotesText = findViewById(R.id.focusVotesText)
+        focusTimerText = findViewById(R.id.focusTimerText)
+        focusPolicyText = findViewById(R.id.focusPolicyText)
 
         RecentSoundsManager.init(applicationContext)
 
@@ -92,7 +104,7 @@ class MainActivity : AppCompatActivity() {
 
         adapter.submitList(RecentSoundsManager.getRecentSounds())
         RecentSoundsManager.addChangeListener(recentSoundsListener)
-        RateLimitManager.addChangeListener(rateLimitListener)
+        FocusTimeManager.addChangeListener(focusTimeListener)
 
         requestNotificationPermission()
         displayIpAddress()
@@ -119,7 +131,8 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         RecentSoundsManager.removeChangeListener(recentSoundsListener)
-        RateLimitManager.removeChangeListener(rateLimitListener)
+        FocusTimeManager.removeChangeListener(focusTimeListener)
+        handler.removeCallbacks(focusTimerRunnable)
     }
 
     private fun requestNotificationPermission() {
@@ -149,25 +162,37 @@ class MainActivity : AppCompatActivity() {
             if (!isBound) {
                 bindService(intent, connection, Context.BIND_AUTO_CREATE)
             }
-            handler.postDelayed({ updateUI() }, 500)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start service", e)
         }
     }
 
-    private fun updateUI() {
-        val isRunning = soundService?.isRunning() == true
-        statusText.text = if (isRunning) "Server Running" else "Starting..."
-    }
-
-    private fun updateRateLimitDisplay() {
-        val quotas = RateLimitManager.getQuotas()
-        if (quotas.isEmpty()) {
-            rateLimitText.text = ""
+    private fun updateFocusTimeDisplay() {
+        val status = FocusTimeManager.getStatus()
+        if (status.state == FocusTimeManager.State.DEFAULT) {
+            focusStateText.text = "Focus Time: Inactive"
+            focusVotesText.visibility = View.GONE
+            focusTimerText.visibility = View.GONE
+            focusPolicyText.visibility = View.GONE
+            handler.removeCallbacks(focusTimerRunnable)
         } else {
-            rateLimitText.text = quotas.joinToString("\n") { q ->
-                "${q.ip}: ${q.used}/${q.limit} used"
+            focusStateText.text = "Focus Time: VOTING"
+            focusVotesText.text = "For ${status.votesFor} / Against ${status.votesAgainst}"
+            val min = status.remainingSeconds / 60
+            val sec = status.remainingSeconds % 60
+            focusTimerText.text = String.format("%d:%02d", min, sec)
+            focusPolicyText.text = when (status.playPolicy) {
+                FocusTimeManager.PlayPolicy.BLOCKED -> "Sounds BLOCKED"
+                FocusTimeManager.PlayPolicy.UNLIMITED -> "Sounds UNLIMITED"
+                FocusTimeManager.PlayPolicy.FOCUS_LIMITED ->
+                    "Limited: ${status.focusPlaysLimit} plays per user"
+                FocusTimeManager.PlayPolicy.NORMAL -> ""
             }
+            focusVotesText.visibility = View.VISIBLE
+            focusTimerText.visibility = View.VISIBLE
+            focusPolicyText.visibility = if (focusPolicyText.text.isEmpty()) View.GONE else View.VISIBLE
+            handler.removeCallbacks(focusTimerRunnable)
+            handler.postDelayed(focusTimerRunnable, 1000)
         }
     }
 

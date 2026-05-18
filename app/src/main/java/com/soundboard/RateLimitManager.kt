@@ -8,7 +8,7 @@ object RateLimitManager {
     private const val MAX_REQUESTS = 5
     private const val WINDOW_MS = 10 * 60 * 1000L // 10 minutes
 
-    private var enabled = true
+    private var enabled = false
     private val requestLog = HashMap<String, MutableList<Long>>()
     private val listeners = mutableListOf<() -> Unit>()
     private val lock = Any()

@@ -15,6 +15,11 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
         override fun getDescription() = "429 Too Many Requests"
     }
 
+    private val FOCUS_BLOCKED = object : Response.IStatus {
+        override fun getRequestStatus() = 403
+        override fun getDescription() = "403 Forbidden - Focus Time Active"
+    }
+
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri
         val params = session.parms
@@ -27,12 +32,14 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
             uri == "/status" -> handleStatus()
             uri == "/recent" -> handleRecent()
             uri == "/rate-limits" -> handleRateLimits()
+            uri == "/focus-vote" -> handleFocusVote(params, clientIp)
+            uri == "/focus-status" -> handleFocusStatus()
             uri == "/ui" -> handleUI()
             uri == "/" -> handleRoot()
             else -> newFixedLengthResponse(
                 Response.Status.NOT_FOUND,
                 "application/json",
-                """{"error": "Not found", "endpoints": ["/play?file=<name>.mp3", "/play-url?url=<myinstants-url>", "/stop", "/status", "/recent", "/rate-limits", "/ui"]}"""
+                """{"error": "Not found", "endpoints": ["/play?file=<name>.mp3", "/play-url?url=<myinstants-url>", "/stop", "/status", "/recent", "/rate-limits", "/focus-vote?vote=for|against", "/focus-status", "/ui"]}"""
             )
         }
     }
@@ -60,13 +67,24 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
                 )
             }
 
-            val rateLimitResult = RateLimitManager.checkAndRecord(clientIp)
-            if (!rateLimitResult.allowed) {
+            val focusCheck = FocusTimeManager.checkPlay(clientIp)
+            if (!focusCheck.allowed) {
                 return newFixedLengthResponse(
-                    TOO_MANY_REQUESTS,
+                    FOCUS_BLOCKED,
                     "application/json",
-                    """{"error": "Rate limit exceeded", "used": ${rateLimitResult.used}, "limit": ${rateLimitResult.limit}, "retryAfterSeconds": ${rateLimitResult.remainingSeconds}}"""
+                    """{"error": "${focusCheck.reason}", "playPolicy": "${focusCheck.policy.name}"}"""
                 )
+            }
+
+            if (focusCheck.policy == FocusTimeManager.PlayPolicy.NORMAL) {
+                val rateLimitResult = RateLimitManager.checkAndRecord(clientIp)
+                if (!rateLimitResult.allowed) {
+                    return newFixedLengthResponse(
+                        TOO_MANY_REQUESTS,
+                        "application/json",
+                        """{"error": "Rate limit exceeded", "used": ${rateLimitResult.used}, "limit": ${rateLimitResult.limit}, "retryAfterSeconds": ${rateLimitResult.remainingSeconds}}"""
+                    )
+                }
             }
 
             soundPlayer.play(url)
@@ -124,13 +142,24 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
                 )
             }
 
-            val rateLimitResult = RateLimitManager.checkAndRecord(clientIp)
-            if (!rateLimitResult.allowed) {
+            val focusCheck = FocusTimeManager.checkPlay(clientIp)
+            if (!focusCheck.allowed) {
                 return newFixedLengthResponse(
-                    TOO_MANY_REQUESTS,
+                    FOCUS_BLOCKED,
                     "application/json",
-                    """{"error": "Rate limit exceeded", "used": ${rateLimitResult.used}, "limit": ${rateLimitResult.limit}, "retryAfterSeconds": ${rateLimitResult.remainingSeconds}}"""
+                    """{"error": "${focusCheck.reason}", "playPolicy": "${focusCheck.policy.name}"}"""
                 )
+            }
+
+            if (focusCheck.policy == FocusTimeManager.PlayPolicy.NORMAL) {
+                val rateLimitResult = RateLimitManager.checkAndRecord(clientIp)
+                if (!rateLimitResult.allowed) {
+                    return newFixedLengthResponse(
+                        TOO_MANY_REQUESTS,
+                        "application/json",
+                        """{"error": "Rate limit exceeded", "used": ${rateLimitResult.used}, "limit": ${rateLimitResult.limit}, "retryAfterSeconds": ${rateLimitResult.remainingSeconds}}"""
+                    )
+                }
             }
 
             soundPlayer.play(soundUrl)
@@ -163,6 +192,31 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
             Response.Status.OK,
             "application/json",
             RateLimitManager.toJson()
+        )
+    }
+
+    private fun handleFocusVote(params: Map<String, String>, clientIp: String): Response {
+        val voteParam = params["vote"]
+        if (voteParam == null || voteParam !in listOf("for", "against")) {
+            return newFixedLengthResponse(
+                Response.Status.BAD_REQUEST,
+                "application/json",
+                """{"error": "Missing or invalid 'vote' parameter. Use vote=for or vote=against"}"""
+            )
+        }
+        val status = FocusTimeManager.vote(clientIp, voteParam == "for")
+        return newFixedLengthResponse(
+            Response.Status.OK,
+            "application/json",
+            """{"state": "${status.state.name}", "votesFor": ${status.votesFor}, "votesAgainst": ${status.votesAgainst}, "remainingSeconds": ${status.remainingSeconds}, "playPolicy": "${status.playPolicy.name}", "focusPlaysUsed": ${status.focusPlaysUsed}, "focusPlaysLimit": ${status.focusPlaysLimit}, "yourVote": "$voteParam"}"""
+        )
+    }
+
+    private fun handleFocusStatus(): Response {
+        return newFixedLengthResponse(
+            Response.Status.OK,
+            "application/json",
+            FocusTimeManager.toJson()
         )
     }
 
@@ -321,36 +375,104 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
             margin: 0 auto;
         }
 
-        .sound-button {
-            padding: 20px 15px;
-            border: none;
+        .sound-card {
+            position: relative;
             border-radius: 12px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 600;
-            color: #fff;
-            text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
             box-shadow: 0 4px 6px rgba(0,0,0,0.3),
                         inset 0 1px 0 rgba(255,255,255,0.2);
             transition: transform 0.1s, box-shadow 0.1s;
-            word-wrap: break-word;
-            text-align: center;
             min-height: 80px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
         }
 
-        .sound-button:hover {
+        .sound-card:hover {
             transform: translateY(-2px);
             box-shadow: 0 6px 12px rgba(0,0,0,0.4),
                         inset 0 1px 0 rgba(255,255,255,0.2);
         }
 
-        .sound-button:active {
+        .sound-card:active {
             transform: translateY(1px);
             box-shadow: 0 2px 4px rgba(0,0,0,0.3),
                         inset 0 1px 0 rgba(255,255,255,0.2);
+        }
+
+        .sound-button {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            height: 100%;
+            min-height: 80px;
+            padding: 20px 36px 20px 15px;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            color: #fff;
+            text-decoration: none;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
+            word-wrap: break-word;
+            word-break: break-word;
+            text-align: center;
+            box-sizing: border-box;
+        }
+
+        .copy-link-btn {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            width: 28px;
+            height: 28px;
+            padding: 0;
+            border: none;
+            border-radius: 50%;
+            background: rgba(0,0,0,0.30);
+            color: #fff;
+            font-size: 14px;
+            line-height: 1;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.75;
+            transition: opacity 0.15s, background 0.15s;
+            z-index: 1;
+        }
+
+        .copy-link-btn:hover, .copy-link-btn:focus {
+            opacity: 1;
+            background: rgba(0,0,0,0.50);
+            outline: none;
+        }
+
+        @media (max-width: 600px) {
+            .copy-link-btn {
+                width: 36px;
+                height: 36px;
+                opacity: 1;
+                font-size: 16px;
+            }
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 32px;
+            left: 50%;
+            transform: translateX(-50%) translateY(20px);
+            background: rgba(0,0,0,0.85);
+            color: #fff;
+            padding: 10px 20px;
+            border-radius: 24px;
+            font-size: 14px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s, transform 0.2s;
+            z-index: 1000;
+        }
+
+        .toast.visible {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
         }
 
         .empty-state {
@@ -400,6 +522,77 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
             text-align: center;
             margin-bottom: 10px;
         }
+
+        .focus-section {
+            max-width: 800px;
+            margin: 0 auto 20px auto;
+            background: #16213e;
+            border-radius: 8px;
+            padding: 15px;
+            color: #ccc;
+            font-size: 14px;
+        }
+
+        .focus-section h3 {
+            color: #f39c12;
+            margin: 0 0 12px 0;
+            font-size: 16px;
+        }
+
+        .focus-buttons {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .vote-btn {
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+            font-weight: 600;
+            flex: 1;
+            outline: 3px solid transparent;
+            outline-offset: -3px;
+            transition: outline-color 0.15s;
+        }
+
+        .vote-btn.for { background: #e74c3c; }
+        .vote-btn.for:hover { background: #c0392b; }
+        .vote-btn.against { background: #27ae60; }
+        .vote-btn.against:hover { background: #2ecc71; }
+        .vote-btn.active { outline-color: #fff; }
+
+        .focus-timer {
+            font-family: monospace;
+            font-size: 28px;
+            color: #f39c12;
+            text-align: center;
+            margin: 8px 0;
+        }
+
+        .focus-vote-counts {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin: 8px 0;
+            font-size: 16px;
+        }
+
+        .focus-vote-counts .for-count { color: #e74c3c; }
+        .focus-vote-counts .against-count { color: #27ae60; }
+
+        .focus-policy {
+            text-align: center;
+            font-size: 13px;
+            color: #888;
+            margin-top: 8px;
+        }
+        .focus-policy.blocked { color: #e74c3c; font-weight: bold; }
+        .focus-policy.unlimited { color: #27ae60; font-weight: bold; }
+        .focus-policy.limited { color: #f39c12; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -414,7 +607,22 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
         <button class="stop-button" onclick="stopSound()">Stop</button>
         <button class="refresh-button" onclick="loadSounds()">Refresh</button>
     </div>
-    <div id="rateLimits" style="max-width: 800px; margin: 0 auto 20px auto; background: #16213e; border-radius: 8px; padding: 15px; color: #ccc; font-size: 14px;">
+    <div id="focusSection" class="focus-section">
+        <h3>Focus Time</h3>
+        <div class="focus-buttons">
+            <button id="voteForBtn" class="vote-btn for" onclick="castVote('for')">Vote for Focus Time</button>
+            <button id="voteAgainstBtn" class="vote-btn against" onclick="castVote('against')" style="display:none;">Vote Against</button>
+        </div>
+        <div id="focusInfo" style="display:none;">
+            <div class="focus-vote-counts">
+                <span class="for-count">For: <span id="votesForCount">0</span></span>
+                <span class="against-count">Against: <span id="votesAgainstCount">0</span></span>
+            </div>
+            <div class="focus-timer" id="focusTimer">10:00</div>
+            <div class="focus-policy" id="focusPolicy"></div>
+        </div>
+    </div>
+    <div id="rateLimits" style="max-width: 800px; margin: 0 auto 20px auto; background: #16213e; border-radius: 8px; padding: 15px; color: #ccc; font-size: 14px; display:none;">
         <h3 style="color: #4ECDC4; margin: 0 0 10px 0; font-size: 16px;">Rate Limits (5 plays / 10 min)</h3>
         <div id="rateLimitList" style="font-family: monospace;"><span style="color: #666;">No activity yet</span></div>
     </div>
@@ -438,11 +646,16 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
                 return;
             }
 
-            container.innerHTML = sounds.map(sound =>
-                '<button class="sound-button" style="background-color: ' + sound.color + '" onclick="playSound(\'' + sound.filename.replace(/'/g, "\\'") + '\')">' +
-                escapeHtml(sound.displayName) +
-                '</button>'
-            ).join('');
+            container.innerHTML = sounds.map(function(sound) {
+                var safeFilename = sound.filename.replace(/'/g, "\\'");
+                var href = '/play?file=' + encodeURIComponent(sound.filename);
+                return '<div class="sound-card" style="background-color: ' + sound.color + '">' +
+                    '<a class="sound-button" href="' + href + '" onclick="return handlePlayClick(event, \'' + safeFilename + '\')">' +
+                    escapeHtml(sound.displayName) +
+                    '</a>' +
+                    '<button class="copy-link-btn" type="button" title="Copy link to bookmark" aria-label="Copy link to bookmark" onclick="copyLink(event, \'' + safeFilename + '\')">🔗</button>' +
+                    '</div>';
+            }).join('');
         }
 
         function escapeHtml(text) {
@@ -451,21 +664,83 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
             return div.innerHTML;
         }
 
+        function handlePlayClick(event, filename) {
+            if (event.metaKey || event.ctrlKey || event.shiftKey || event.button === 1) {
+                return true;
+            }
+            event.preventDefault();
+            playSound(filename);
+            return false;
+        }
+
+        async function copyLink(event, filename) {
+            event.preventDefault();
+            event.stopPropagation();
+            var url = window.location.origin + '/play?file=' + encodeURIComponent(filename);
+            try {
+                await navigator.clipboard.writeText(url);
+                showToast('Link copied!');
+                return;
+            } catch (err) {
+                // navigator.clipboard requires HTTPS or localhost; on
+                // http://192.168.x.x it throws. Fall through to the
+                // execCommand path below.
+            }
+            var ta = document.createElement('textarea');
+            ta.value = url;
+            ta.setAttribute('readonly', '');
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            ta.setSelectionRange(0, url.length);
+            var copied = false;
+            try { copied = document.execCommand('copy'); } catch (e) {}
+            document.body.removeChild(ta);
+            if (copied) {
+                showToast('Link copied!');
+            } else {
+                prompt('Copy this URL:', url);
+            }
+        }
+
+        function showToast(message) {
+            var toast = document.getElementById('toast');
+            if (!toast) {
+                toast = document.createElement('div');
+                toast.id = 'toast';
+                toast.className = 'toast';
+                document.body.appendChild(toast);
+            }
+            toast.textContent = message;
+            // Force reflow so the transition replays if shown back-to-back
+            void toast.offsetWidth;
+            toast.classList.add('visible');
+            clearTimeout(toast._hideTimer);
+            toast._hideTimer = setTimeout(function() {
+                toast.classList.remove('visible');
+            }, 1800);
+        }
+
         async function playSound(filename) {
             document.getElementById('error').textContent = '';
             try {
                 const response = await fetch('/play?file=' + encodeURIComponent(filename));
                 const data = await response.json();
+                if (response.status === 403) {
+                    document.getElementById('error').textContent = data.error;
+                    loadFocusStatus();
+                    return;
+                }
                 if (response.status === 429) {
                     document.getElementById('error').textContent = 'Rate limited! Try again in ' + data.retryAfterSeconds + 's';
-                    loadRateLimits();
                     return;
                 }
                 if (response.status === 404) {
                     document.getElementById('error').textContent = 'Sound not found';
                 }
                 setTimeout(loadSounds, 100);
-                loadRateLimits();
             } catch (error) {
                 console.error('Failed to play sound:', error);
             }
@@ -480,9 +755,13 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
             try {
                 const response = await fetch('/play-url?url=' + encodeURIComponent(url));
                 const data = await response.json();
+                if (response.status === 403) {
+                    document.getElementById('error').textContent = data.error;
+                    loadFocusStatus();
+                    return;
+                }
                 if (response.status === 429) {
                     document.getElementById('error').textContent = 'Rate limited! Try again in ' + data.retryAfterSeconds + 's';
-                    loadRateLimits();
                     return;
                 }
                 if (data.error) {
@@ -490,7 +769,6 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
                 } else {
                     document.getElementById('urlInput').value = '';
                     setTimeout(loadSounds, 100);
-                    loadRateLimits();
                 }
             } catch (error) {
                 document.getElementById('error').textContent = 'Failed to play URL';
@@ -540,10 +818,102 @@ class SoundServer(port: Int, private val soundPlayer: SoundPlayer) : NanoHTTPD(p
             }).join('');
         }
 
+        var myVote = null;
+        var focusRemainingSeconds = 0;
+        var focusTimerInterval = null;
+
+        async function castVote(vote) {
+            try {
+                var response = await fetch('/focus-vote?vote=' + vote);
+                var data = await response.json();
+                myVote = vote;
+                updateFocusUI(data);
+            } catch (error) {
+                console.error('Failed to cast vote:', error);
+            }
+        }
+
+        async function loadFocusStatus() {
+            try {
+                var response = await fetch('/focus-status');
+                var data = await response.json();
+                updateFocusUI(data);
+            } catch (error) {
+                console.error('Failed to load focus status:', error);
+            }
+        }
+
+        function updateFocusUI(data) {
+            var focusInfo = document.getElementById('focusInfo');
+            var voteForBtn = document.getElementById('voteForBtn');
+            var voteAgainstBtn = document.getElementById('voteAgainstBtn');
+            var votesForCount = document.getElementById('votesForCount');
+            var votesAgainstCount = document.getElementById('votesAgainstCount');
+            var focusTimer = document.getElementById('focusTimer');
+            var focusPolicy = document.getElementById('focusPolicy');
+
+            if (data.state === 'DEFAULT') {
+                focusInfo.style.display = 'none';
+                voteForBtn.style.display = '';
+                voteAgainstBtn.style.display = 'none';
+                voteForBtn.classList.remove('active');
+                voteAgainstBtn.classList.remove('active');
+                myVote = null;
+                if (focusTimerInterval) {
+                    clearInterval(focusTimerInterval);
+                    focusTimerInterval = null;
+                }
+            } else {
+                focusInfo.style.display = '';
+                voteForBtn.style.display = '';
+                voteAgainstBtn.style.display = '';
+
+                votesForCount.textContent = data.votesFor;
+                votesAgainstCount.textContent = data.votesAgainst;
+
+                voteForBtn.classList.toggle('active', myVote === 'for');
+                voteAgainstBtn.classList.toggle('active', myVote === 'against');
+
+                focusRemainingSeconds = data.remainingSeconds;
+                formatTimer(focusTimer, focusRemainingSeconds);
+
+                if (focusTimerInterval) clearInterval(focusTimerInterval);
+                focusTimerInterval = setInterval(function() {
+                    if (focusRemainingSeconds > 0) {
+                        focusRemainingSeconds--;
+                        formatTimer(focusTimer, focusRemainingSeconds);
+                    } else {
+                        clearInterval(focusTimerInterval);
+                        focusTimerInterval = null;
+                    }
+                }, 1000);
+
+                focusPolicy.className = 'focus-policy';
+                if (data.playPolicy === 'BLOCKED') {
+                    focusPolicy.textContent = 'Sounds are BLOCKED (majority wants focus)';
+                    focusPolicy.classList.add('blocked');
+                } else if (data.playPolicy === 'UNLIMITED') {
+                    focusPolicy.textContent = 'Sounds are UNLIMITED (majority against focus)';
+                    focusPolicy.classList.add('unlimited');
+                } else if (data.playPolicy === 'FOCUS_LIMITED') {
+                    focusPolicy.textContent = 'Sounds limited: ' + data.focusPlaysLimit + ' plays per user (tie vote)';
+                    focusPolicy.classList.add('limited');
+                }
+            }
+        }
+
+        function formatTimer(element, seconds) {
+            var min = Math.floor(seconds / 60);
+            var sec = seconds % 60;
+            element.textContent = min + ':' + (sec < 10 ? '0' : '') + sec;
+        }
+
         loadSounds();
         loadRateLimits();
+        loadFocusStatus();
         setInterval(loadSounds, 5000);
         setInterval(loadRateLimits, 5000);
+        setInterval(loadFocusStatus, 2000);
     </script>
 </body>
 </html>

@@ -58,6 +58,12 @@ class SoundService : Service() {
     }
 
     fun startServer() {
+        // onStartCommand runs on every app open. A second start() on a live NanoHTTPD
+        // fails to bind and leaves the old listener on a dead socket.
+        if (soundServer?.isAlive == true) {
+            Log.d(TAG, "HTTP server already running")
+            return
+        }
         try {
             Log.d(TAG, "Starting HTTP server on port 8080")
             soundServer?.start()
